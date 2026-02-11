@@ -1,0 +1,27 @@
+# Prompt
+prompt.txt
+
+# 
+TODO.md
+
+# Arquivos de ambiente (contêm credenciais)
+.env
+
+# Arquivos gerados
+rss_feeds_metadata.json
+news_selected.json
+news_today_full.json
+
+# Binário compilado
+gonews
+
+# Arquivos do sistema
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
