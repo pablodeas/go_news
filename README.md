@@ -1,6 +1,6 @@
-# GoNews - Agregador de Notícias com IA e Telegram
+# GoNews
 
-Coleta, cura (com IA) e envia notícias automaticamente para o Telegram com preview de imagem.
+Coleta, cura (com IA) e envia notícias automaticamente para o Telegram.
 
 ## 🎯 Fluxo de Trabalho
 
@@ -332,28 +332,6 @@ if len(description) > 500 {  // Altere este número
     description = description[:500]
     // ...
 }
-```
-
-## 📚 Arquivos do Projeto
-
-```
-gonews.go              # Script principal (630 linhas)
-go.mod                 # Módulo Go
-.env.example           # Template de configuração
-.gitignore             # Ignora arquivos sensíveis
-README.md              # Esta documentação
-QUICKSTART.txt         # Guia visual rápido
-prompt_v2.txt          # Prompt otimizado para IA
-ENV_CONFIG.txt         # Guia detalhado de configuração
-FINAL_CHANGES.txt      # Changelog detalhado
-```
-
-**Arquivos gerados (não commitados):**
-```
-.env                        # Suas credenciais (em .gitignore)
-rss_feeds_metadata.json     # Metadados dos feeds
-news_selected.json          # Notícias selecionadas pela IA
-news_today_full.json        # Notícias com corpo completo
 ```
 
 ## 🆘 Suporte
