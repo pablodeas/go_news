@@ -1,70 +1,83 @@
-#!/usr/bin/env sh
-
-#!/bin/bash
+#!/usr/bin/env bash
 
 #==============================================================================
-# GoNews - Script de Automação Completa
-# Automatiza: Coleta → IA → Extração → Telegram
+# GoNews - Script de Automação (Otimizado para Cron)
+# Baseado no script funcional do usuário com melhorias
 #==============================================================================
 
 set -e  # Sair em caso de erro
-
-# Cores para output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-PURPLE='\033[0;35m'
-CYAN='\033[0;36m'
-NC='\033[0m' # No Color
-
-# Configurações
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-METADATA_FILE="rss_feeds_metadata.json"
-SELECTED_FILE="news_selected.json"
-FULL_FILE="news_today_full.json"
-PROMPT_FILE="prompt.txt"
+set -u  # Erro em variáveis não definidas
 
 #==============================================================================
-# FUNÇÕES AUXILIARES
+# CONFIGURAÇÃO - CAMINHOS ABSOLUTOS (ESSENCIAL PARA CRON)
 #==============================================================================
 
-print_header() {
-    echo -e "${CYAN}"
-    echo "═══════════════════════════════════════════════════════════════════"
-    echo "  $1"
-    echo "═══════════════════════════════════════════════════════════════════"
-    echo -e "${NC}"
-}
+PROJECT_DIR="/home/pablodeas/Projects/go/go_news/"
+GO_NEWS="/usr/bin/gonews"
+GO="/usr/local/go/bin/go"
+OPENCODE="/home/pablodeas/.opencode/bin/opencode"
+LOG_DIR="${PROJECT_DIR}logs"
 
-print_step() {
-    echo -e "${BLUE}▶ $1${NC}"
-}
+# Arquivos
+METADATA_FILE="${PROJECT_DIR}rss_feeds_metadata.json"
+SELECTED_FILE="${PROJECT_DIR}news_selected.json"
+FULL_FILE="${PROJECT_DIR}news_today_full.json"
+PROMPT_FILE="${PROJECT_DIR}prompt.txt"
 
-print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
-}
+# Configuração
+AI_MODEL="opencode/minimax-m2.5-free"
+KEEP_LOGS_DAYS=3  # Manter logs por X dias
 
-print_error() {
-    echo -e "${RED}✗ $1${NC}"
-}
+#==============================================================================
+# CORES (apenas se terminal interativo)
+#==============================================================================
 
-print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
+if [ -t 1 ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    CYAN='\033[0;36m'
+    BOLD='\033[1m'
+    NC='\033[0m'
+else
+    RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' NC=''
+fi
 
-check_file_exists() {
-    if [ ! -f "$1" ]; then
-        print_error "Arquivo não encontrado: $1"
-        exit 1
-    fi
-}
+#==============================================================================
+# FUNÇÕES DE LOGGING
+#==============================================================================
 
-check_command() {
-    if ! command -v "$1" &> /dev/null; then
-        print_error "Comando '$1' não encontrado. Instale antes de continuar."
-        exit 1
-    fi
+log_message() {
+    local level="$1"
+    shift
+    local message="$*"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    
+    case "$level" in
+        INFO)
+            echo -e "${CYAN}[$timestamp]${NC} ${BLUE}▶${NC} $message"
+            ;;
+        SUCCESS)
+            echo -e "${CYAN}[$timestamp]${NC} ${GREEN}✓${NC} $message"
+            ;;
+        ERROR)
+            echo -e "${CYAN}[$timestamp]${NC} ${RED}✗${NC} $message" >&2
+            ;;
+        WARNING)
+            echo -e "${CYAN}[$timestamp]${NC} ${YELLOW}⚠${NC} $message"
+            ;;
+        HEADER)
+            echo ""
+            echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
+            echo -e "${CYAN}${BOLD}  $message${NC}"
+            echo -e "${CYAN}${BOLD}═══════════════════════════════════════════════════════════════════${NC}"
+            echo ""
+            ;;
+        *)
+            echo "[$timestamp] $level $message"
+            ;;
+    esac
 }
 
 #==============================================================================
@@ -72,28 +85,64 @@ check_command() {
 #==============================================================================
 
 check_dependencies() {
-    print_step "Verificando dependências..."
+    log_message INFO "Verificando dependências e ambiente..."
     
-    check_command "go"
-    print_success "Go encontrado: $(go version)"
+    local errors=0
     
-    if command -v opencode &> /dev/null; then
-        print_success "OpenCode encontrado"
+    # Verificar executáveis
+    for cmd in "$GO_NEWS:GoNews" "$GO:Go" "$OPENCODE:OpenCode"; do
+        local path="${cmd%:*}"
+        local name="${cmd#*:}"
+        
+        if [ -f "$path" ] && [ -x "$path" ]; then
+            log_message SUCCESS "$name encontrado: $path"
+        else
+            log_message ERROR "$name não encontrado ou sem permissão: $path"
+            ((errors++))
+        fi
+    done
+    
+    # Verificar diretório do projeto
+    if [ -d "$PROJECT_DIR" ]; then
+        log_message SUCCESS "Diretório do projeto: $PROJECT_DIR"
     else
-        print_warning "OpenCode não encontrado (necessário para IA)"
+        log_message ERROR "Diretório do projeto não encontrado: $PROJECT_DIR"
+        ((errors++))
     fi
     
-    # Verificar .env
-    if [ ! -f ".env" ]; then
-        print_warning "Arquivo .env não encontrado"
-        echo -e "${YELLOW}Crie o arquivo .env com suas credenciais do Telegram:${NC}"
-        echo "  cp .env.example .env"
-        echo "  # Edite .env com seu token e chat_id"
-        exit 1
+    # Criar diretório de logs se não existir
+    if [ ! -d "$LOG_DIR" ]; then
+        if mkdir -p "$LOG_DIR" 2>/dev/null; then
+            log_message SUCCESS "Diretório de logs criado: $LOG_DIR"
+        else
+            log_message ERROR "Não foi possível criar diretório de logs: $LOG_DIR"
+            ((errors++))
+        fi
+    else
+        log_message SUCCESS "Diretório de logs: $LOG_DIR"
     fi
     
-    print_success "Arquivo .env encontrado"
-    echo ""
+    # Verificar arquivo .env
+    if [ -f "${PROJECT_DIR}.env" ]; then
+        log_message SUCCESS "Arquivo .env encontrado"
+    else
+        log_message WARNING "Arquivo .env não encontrado (necessário para Telegram)"
+    fi
+    
+    # Verificar arquivo de prompt
+    if [ -f "$PROMPT_FILE" ]; then
+        log_message SUCCESS "Arquivo de prompt encontrado"
+    else
+        log_message WARNING "Arquivo prompt.txt não encontrado (necessário para IA)"
+    fi
+    
+    if [ $errors -gt 0 ]; then
+        log_message ERROR "Encontrado(s) $errors erro(s). Verifique a configuração."
+        return 1
+    fi
+    
+    log_message SUCCESS "Todas as verificações passaram"
+    return 0
 }
 
 #==============================================================================
@@ -101,20 +150,36 @@ check_dependencies() {
 #==============================================================================
 
 step1_collect() {
-    print_header "ETAPA 1: Coleta de Metadados"
+    log_message HEADER "ETAPA 1: Coleta de Metadados"
     
-    print_step "Coletando notícias dos feeds RSS..."
-    go run gonews
+    local log_file="${LOG_DIR}/step1_$(date +%Y%m%d_%H%M%S).log"
+    local start_time=$(date +%s)
     
-    if [ -f "$METADATA_FILE" ]; then
-        TOTAL_ITEMS=$(grep -o '"total_items":[0-9]*' "$METADATA_FILE" | grep -o '[0-9]*')
-        print_success "Metadados coletados: $TOTAL_ITEMS itens"
-        print_success "Arquivo gerado: $METADATA_FILE"
+    log_message INFO "Executando: $GO_NEWS"
+    log_message INFO "Diretório: $PROJECT_DIR"
+    log_message INFO "Log: $log_file"
+    
+    if cd "$PROJECT_DIR" && "$GO_NEWS" > "$log_file" 2>&1; then
+        local duration=$(($(date +%s) - start_time))
+        log_message SUCCESS "Step1 concluído (${duration}s)"
+        
+        # Verificar e mostrar estatísticas
+        if [ -f "$METADATA_FILE" ]; then
+            local total=$(grep -o '"total_items":[0-9]*' "$METADATA_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
+            local size=$(du -h "$METADATA_FILE" | cut -f1)
+            log_message SUCCESS "Arquivo: $METADATA_FILE ($size)"
+            log_message INFO "Total de itens coletados: $total"
+        else
+            log_message WARNING "Arquivo $METADATA_FILE não encontrado"
+        fi
+        
+        return 0
     else
-        print_error "Falha ao gerar $METADATA_FILE"
-        exit 1
+        local exit_code=$?
+        log_message ERROR "Step1 falhou (código: $exit_code)"
+        log_message ERROR "Verifique o log: $log_file"
+        return 1
     fi
-    echo ""
 }
 
 #==============================================================================
@@ -122,37 +187,48 @@ step1_collect() {
 #==============================================================================
 
 step2_ai_analysis() {
-    print_header "ETAPA 2: Análise com IA"
+    log_message HEADER "ETAPA 2: Análise com IA"
     
-    check_file_exists "$METADATA_FILE"
-    check_file_exists "$PROMPT_FILE"
+    local log_file="${LOG_DIR}/step2_$(date +%Y%m%d_%H%M%S).log"
+    local start_time=$(date +%s)
     
-    # Verificar se opencode está disponível
-    if ! command -v opencode &> /dev/null; then
-        print_warning "OpenCode não instalado. Executando manualmente..."
-        echo ""
-        echo -e "${YELLOW}Execute o comando:${NC}"
-        echo "  opencode run \"Execute o $PROMPT_FILE\""
-        echo ""
-        echo -e "${YELLOW}Ou crie manualmente o arquivo $SELECTED_FILE${NC}"
-        echo ""
-        read -p "Pressione ENTER após gerar $SELECTED_FILE..."
+    # Validar arquivos necessários
+    if [ ! -f "$METADATA_FILE" ]; then
+        log_message ERROR "Arquivo de entrada não encontrado: $METADATA_FILE"
+        return 1
+    fi
+    
+    if [ ! -f "$PROMPT_FILE" ]; then
+        log_message ERROR "Arquivo de prompt não encontrado: $PROMPT_FILE"
+        return 1
+    fi
+    
+    log_message INFO "Executando: $OPENCODE"
+    log_message INFO "Modelo: $AI_MODEL"
+    log_message INFO "Prompt: $PROMPT_FILE"
+    log_message INFO "Log: $log_file"
+    
+    if cd "$PROJECT_DIR" && "$OPENCODE" run --model "$AI_MODEL" "Execute o prompt.txt" > "$log_file" 2>&1; then
+        local duration=$(($(date +%s) - start_time))
+        log_message SUCCESS "Step2 concluído (${duration}s)"
+        
+        # Verificar e mostrar estatísticas
+        if [ -f "$SELECTED_FILE" ]; then
+            local count=$(grep -o '"title"' "$SELECTED_FILE" 2>/dev/null | wc -l || echo "?")
+            local size=$(du -h "$SELECTED_FILE" | cut -f1)
+            log_message SUCCESS "Arquivo: $SELECTED_FILE ($size)"
+            log_message INFO "Notícias selecionadas pela IA: $count"
+        else
+            log_message WARNING "Arquivo $SELECTED_FILE não encontrado"
+        fi
+        
+        return 0
     else
-        print_step "Executando análise com IA..."
-        opencode run "Execute o $PROMPT_FILE"
+        local exit_code=$?
+        log_message ERROR "Step2 falhou (código: $exit_code)"
+        log_message ERROR "Verifique o log: $log_file"
+        return 1
     fi
-
-    # Verificar se o arquivo foi gerado
-    if [ ! -f "$SELECTED_FILE" ]; then
-        print_error "Arquivo $SELECTED_FILE não foi gerado"
-        print_warning "Crie o arquivo manualmente e execute novamente"
-        exit 1
-    fi
-    
-    SELECTED_COUNT=$(grep -o '"title"' "$SELECTED_FILE" | wc -l)
-    print_success "IA selecionou: $SELECTED_COUNT notícias"
-    print_success "Arquivo gerado: $SELECTED_FILE"
-    echo ""
 }
 
 #==============================================================================
@@ -160,24 +236,44 @@ step2_ai_analysis() {
 #==============================================================================
 
 step3_extract() {
-    print_header "ETAPA 3: Extração de Corpo Completo"
+    log_message HEADER "ETAPA 3: Extração de Corpo Completo"
     
-    check_file_exists "$SELECTED_FILE"
+    local log_file="${LOG_DIR}/step3_$(date +%Y%m%d_%H%M%S).log"
+    local start_time=$(date +%s)
     
-    print_step "Extraindo corpo completo dos artigos..."
-    go run gonews --extract-full "$SELECTED_FILE"
-    
-    if [ -f "$FULL_FILE" ]; then
-        TOTAL=$(grep -o '"total_articles":[0-9]*' "$FULL_FILE" | grep -o '[0-9]*')
-        EXTRACTED=$(grep -o '"articles_extracted":[0-9]*' "$FULL_FILE" | grep -o '[0-9]*')
-        print_success "Artigos processados: $TOTAL"
-        print_success "Extrações bem-sucedidas: $EXTRACTED"
-        print_success "Arquivo gerado: $FULL_FILE"
-    else
-        print_error "Falha ao gerar $FULL_FILE"
-        exit 1
+    # Validar arquivo necessário
+    if [ ! -f "$SELECTED_FILE" ]; then
+        log_message ERROR "Arquivo de entrada não encontrado: $SELECTED_FILE"
+        return 1
     fi
-    echo ""
+    
+    log_message INFO "Executando: $GO_NEWS --extract-full"
+    log_message INFO "Entrada: news_selected.json"
+    log_message INFO "Log: $log_file"
+    
+    if cd "$PROJECT_DIR" && "$GO_NEWS" --extract-full news_selected.json > "$log_file" 2>&1; then
+        local duration=$(($(date +%s) - start_time))
+        log_message SUCCESS "Step3 concluído (${duration}s)"
+        
+        # Verificar e mostrar estatísticas
+        if [ -f "$FULL_FILE" ]; then
+            local total=$(grep -o '"total_articles":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
+            local extracted=$(grep -o '"articles_extracted":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
+            local size=$(du -h "$FULL_FILE" | cut -f1)
+            log_message SUCCESS "Arquivo: $FULL_FILE ($size)"
+            log_message INFO "Artigos processados: $total"
+            log_message INFO "Extrações bem-sucedidas: $extracted"
+        else
+            log_message WARNING "Arquivo $FULL_FILE não encontrado"
+        fi
+        
+        return 0
+    else
+        local exit_code=$?
+        log_message ERROR "Step3 falhou (código: $exit_code)"
+        log_message ERROR "Verifique o log: $log_file"
+        return 1
+    fi
 }
 
 #==============================================================================
@@ -185,170 +281,238 @@ step3_extract() {
 #==============================================================================
 
 step4_send() {
-    print_header "ETAPA 4: Envio para Telegram"
+    log_message HEADER "ETAPA 4: Envio para Telegram"
     
-    check_file_exists "$FULL_FILE"
+    local log_file="${LOG_DIR}/step4_$(date +%Y%m%d_%H%M%S).log"
+    local start_time=$(date +%s)
     
-    print_step "Enviando notícias para o Telegram..."
-    go run gonews --send-telegram "$FULL_FILE"
+    # Validar arquivo necessário
+    if [ ! -f "$FULL_FILE" ]; then
+        log_message ERROR "Arquivo de entrada não encontrado: $FULL_FILE"
+        return 1
+    fi
     
-    print_success "Notícias enviadas para o Telegram!"
-    echo ""
+    log_message INFO "Executando: $GO_NEWS --send-telegram"
+    log_message INFO "Entrada: news_today_full.json"
+    log_message INFO "Log: $log_file"
+    
+    if cd "$PROJECT_DIR" && "$GO_NEWS" --send-telegram news_today_full.json > "$log_file" 2>&1; then
+        local duration=$(($(date +%s) - start_time))
+        log_message SUCCESS "Step4 concluído (${duration}s)"
+        log_message SUCCESS "Notícias enviadas para o Telegram!"
+        return 0
+    else
+        local exit_code=$?
+        log_message ERROR "Step4 falhou (código: $exit_code)"
+        log_message ERROR "Verifique o log: $log_file"
+        return 1
+    fi
 }
 
 #==============================================================================
-# FUNÇÃO PRINCIPAL
+# LIMPEZA E MANUTENÇÃO
 #==============================================================================
 
-run_all() {
-    print_header "🗞️  GoNews - Automação Completa"
-    echo -e "${CYAN}Início: $(date '+%H:%M:%S - %d/%m/%Y')${NC}"
-    echo ""
+cleanup_old_logs() {
+    log_message INFO "Removendo logs antigos (>${KEEP_LOGS_DAYS} dias)..."
     
-    START_TIME=$(date +%s)
+    local deleted=0
+    local old_logs=$(find "$LOG_DIR" -name "*.log" -type f -mtime +$KEEP_LOGS_DAYS 2>/dev/null)
     
-    check_dependencies
-    step1_collect
-    step2_ai_analysis
-    step3_extract
-    step4_send
+    if [ -n "$old_logs" ]; then
+        while IFS= read -r file; do
+            if [ -f "$file" ]; then
+                rm -f "$file"
+                ((deleted++))
+            fi
+        done <<< "$old_logs"
+    fi
     
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    MINUTES=$((DURATION / 60))
-    SECONDS=$((DURATION % 60))
+    if [ $deleted -gt 0 ]; then
+        log_message SUCCESS "Removidos $deleted arquivo(s) de log"
+    else
+        log_message INFO "Nenhum log antigo para remover"
+    fi
+}
+
+archive_old_json() {
+    log_message INFO "Arquivando JSONs anteriores..."
     
-    print_header "✅ Processo Concluído"
-    echo -e "${GREEN}Tempo total: ${MINUTES}m ${SECONDS}s${NC}"
-    echo -e "${CYAN}Fim: $(date '+%H:%M:%S - %d/%m/%Y')${NC}"
-    echo ""
+    local archive_dir="${PROJECT_DIR}archive/$(date +%Y%m)"
+    
+    if [ ! -d "$archive_dir" ]; then
+        mkdir -p "$archive_dir" 2>/dev/null || {
+            log_message WARNING "Não foi possível criar diretório de arquivo"
+            return 1
+        }
+    fi
+    
+    local archived=0
+    for file in "$METADATA_FILE" "$SELECTED_FILE" "$FULL_FILE"; do
+        if [ -f "$file" ]; then
+            local basename=$(basename "$file" .json)
+            local archive_name="${archive_dir}/${basename}_$(date +%Y%m%d_%H%M%S).json"
+            if mv "$file" "$archive_name" 2>/dev/null; then
+                ((archived++))
+            fi
+        fi
+    done
+    
+    [ $archived -gt 0 ] && log_message SUCCESS "Arquivados $archived arquivo(s)"
 }
 
 #==============================================================================
-# FUNÇÕES DE LIMPEZA
+# RESUMO E ESTATÍSTICAS
 #==============================================================================
 
-clean() {
-    print_header "🧹 Limpeza de Arquivos"
+show_summary() {
+    log_message HEADER "📊 Resumo da Execução"
     
-    print_step "Removendo arquivos gerados..."
+    echo -e "${BOLD}Configuração:${NC}"
+    echo -e "  Projeto: ${CYAN}$PROJECT_DIR${NC}"
+    echo -e "  Logs: ${CYAN}$LOG_DIR${NC}"
+    echo ""
     
-    rm -f "$METADATA_FILE" && echo "  - $METADATA_FILE"
-    rm -f "$SELECTED_FILE" && echo "  - $SELECTED_FILE"
-    rm -f "$FULL_FILE" && echo "  - $FULL_FILE"
-    
-    print_success "Arquivos removidos"
-}
-
-#==============================================================================
-# MENU INTERATIVO
-#==============================================================================
-
-show_menu() {
-    clear
-    print_header "GoNews - Menu Principal"
-    echo ""
-    echo "  1) Executar processo completo (automático)"
-    echo "  2) Etapa 1: Coletar metadados"
-    echo "  3) Etapa 2: Análise com IA (manual)"
-    echo "  4) Etapa 3: Extrair corpo completo"
-    echo "  5) Etapa 4: Enviar para Telegram"
-    echo "  6) Limpar arquivos gerados"
-    echo "  7) Verificar status dos arquivos"
-    echo "  0) Sair"
-    echo ""
-    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════${NC}"
-    echo ""
-}
-
-check_status() {
-    print_header "📊 Status dos Arquivos"
+    echo -e "${BOLD}Arquivos Gerados:${NC}"
     
     check_file() {
-        if [ -f "$1" ]; then
-            SIZE=$(du -h "$1" | cut -f1)
-            echo -e "${GREEN}✓${NC} $1 ${CYAN}($SIZE)${NC}"
+        local file="$1"
+        local desc="$2"
+        
+        if [ -f "$file" ]; then
+            local size=$(du -h "$file" 2>/dev/null | cut -f1 || echo "?")
+            local time=$(date -r "$file" '+%H:%M:%S' 2>/dev/null || echo "?")
+            echo -e "  ${GREEN}✓${NC} $desc ${CYAN}($size, $time)${NC}"
+            return 0
         else
-            echo -e "${RED}✗${NC} $1 ${YELLOW}(não encontrado)${NC}"
+            echo -e "  ${RED}✗${NC} $desc ${YELLOW}(não encontrado)${NC}"
+            return 1
         fi
     }
     
-    check_file ".env"
-    check_file "$METADATA_FILE"
-    check_file "$SELECTED_FILE"
-    check_file "$FULL_FILE"
+    local files_ok=0
+    check_file "$METADATA_FILE" "Metadados" && ((files_ok++))
+    check_file "$SELECTED_FILE" "IA Selecionadas" && ((files_ok++))
+    check_file "$FULL_FILE" "Corpo Completo" && ((files_ok++))
+    
     echo ""
-}
-
-interactive_menu() {
-    while true; do
-        show_menu
-        read -p "Escolha uma opção: " choice
-        echo ""
-        
-        case $choice in
-            1)
-                run_all
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            2)
-                check_dependencies
-                step1_collect
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            3)
-                step2_ai_analysis
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            4)
-                step3_extract
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            5)
-                step4_send
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            6)
-                clean
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            7)
-                check_status
-                read -p "Pressione ENTER para continuar..."
-                ;;
-            0)
-                echo "Saindo..."
-                exit 0
-                ;;
-            *)
-                print_error "Opção inválida!"
-                sleep 2
-                ;;
-        esac
-    done
+    echo -e "${BOLD}Estatísticas:${NC}"
+    
+    if [ -f "$METADATA_FILE" ]; then
+        local total=$(grep -o '"total_items":[0-9]*' "$METADATA_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        echo -e "  Itens coletados: ${CYAN}$total${NC}"
+    fi
+    
+    if [ -f "$SELECTED_FILE" ]; then
+        local selected=$(grep -o '"title"' "$SELECTED_FILE" 2>/dev/null | wc -l || echo "0")
+        echo -e "  Selecionados pela IA: ${CYAN}$selected${NC}"
+    fi
+    
+    if [ -f "$FULL_FILE" ]; then
+        local total=$(grep -o '"total_articles":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        local extracted=$(grep -o '"articles_extracted":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        echo -e "  Artigos extraídos: ${CYAN}$extracted/$total${NC}"
+    fi
+    
+    echo ""
+    return $files_ok
 }
 
 #==============================================================================
-# ARGUMENTOS DE LINHA DE COMANDO
+# EXECUTAR TUDO
 #==============================================================================
 
-show_usage() {
-    echo "Uso: $0 [opção]"
+run_all() {
+    local overall_start=$(date +%s)
+    local start_timestamp=$(date '+%d/%m/%Y às %H:%M:%S')
+    
+    log_message HEADER "🗞️  GoNews - Execução Automática"
+    
+    echo -e "${CYAN}Início: $start_timestamp${NC}"
+    echo -e "${CYAN}Diretório: $PROJECT_DIR${NC}"
     echo ""
-    echo "Opções:"
-    echo "  --all, -a       Executar processo completo"
-    echo "  --collect, -c   Apenas coletar metadados"
-    echo "  --extract, -e   Apenas extrair corpo completo"
-    echo "  --send, -s      Apenas enviar para Telegram"
-    echo "  --clean         Limpar arquivos gerados"
-    echo "  --status        Verificar status dos arquivos"
-    echo "  --menu, -m      Menu interativo"
-    echo "  --help, -h      Mostrar esta ajuda"
+    
+    # Array para rastrear falhas
+    local -a failed_steps=()
+    
+    # Verificar dependências
+    if ! check_dependencies; then
+        log_message ERROR "Verificação de dependências falhou"
+        return 1
+    fi
+    
     echo ""
-    echo "Exemplos:"
-    echo "  $0 --all        # Executar tudo automaticamente"
-    echo "  $0 --menu       # Menu interativo"
-    echo "  $0 --status     # Ver status dos arquivos"
+    
+    # Executar etapas
+    step1_collect || failed_steps+=("Step1")
+    step2_ai_analysis || failed_steps+=("Step2")
+    step3_extract || failed_steps+=("Step3")
+    step4_send || failed_steps+=("Step4")
+    
+    # Manutenção
+    echo ""
+    log_message INFO "Executando manutenção..."
+    cleanup_old_logs
+    
+    # Resumo
+    echo ""
+    show_summary
+    local files_ok=$?
+    
+    # Resultado final
+    local overall_duration=$(($(date +%s) - overall_start))
+    local minutes=$((overall_duration / 60))
+    local seconds=$((overall_duration % 60))
+    
+    echo ""
+    log_message HEADER "Resultado Final"
+    
+    if [ ${#failed_steps[@]} -eq 0 ]; then
+        echo -e "${GREEN}${BOLD}✅ Processo concluído com sucesso!${NC}"
+        echo -e "${GREEN}   Todas as 4 etapas executadas sem erros${NC}"
+    else
+        echo -e "${RED}${BOLD}⚠️  Processo concluído com erros${NC}"
+        echo -e "${RED}   Etapas com falha: ${failed_steps[*]}${NC}"
+    fi
+    
+    echo ""
+    echo -e "${CYAN}Tempo total: ${BOLD}${minutes}m ${seconds}s${NC}"
+    echo -e "${CYAN}Término: $(date '+%d/%m/%Y às %H:%M:%S')${NC}"
+    echo ""
+    
+    # Retornar código de erro se houve falhas
+    [ ${#failed_steps[@]} -eq 0 ]
+}
+
+#==============================================================================
+# OPÇÕES DE LINHA DE COMANDO
+#==============================================================================
+
+show_help() {
+    cat << HELP
+Uso: $0 [opção]
+
+Opções:
+  --all, -a         Executar processo completo (padrão)
+  --collect, -c     Apenas Step1: Coletar metadados
+  --ai              Apenas Step2: Análise com IA
+  --extract, -e     Apenas Step3: Extrair corpo completo
+  --send, -s        Apenas Step4: Enviar para Telegram
+  --clean           Limpar logs antigos
+  --archive         Arquivar JSONs antigos
+  --status          Mostrar status dos arquivos
+  --help, -h        Mostrar esta ajuda
+
+Exemplos:
+  $0                  # Executar tudo
+  $0 --all            # Executar tudo (explícito)
+  $0 --status         # Ver status
+  $0 --clean          # Limpar logs
+
+Para usar no cron:
+  0 8 * * * $0 --all >> $LOG_DIR/cron.log 2>&1
+
+HELP
 }
 
 #==============================================================================
@@ -356,20 +520,15 @@ show_usage() {
 #==============================================================================
 
 main() {
-    # Se não houver argumentos, mostrar menu
-    if [ $# -eq 0 ]; then
-        interactive_menu
-        exit 0
-    fi
-    
-    # Processar argumentos
-    case "$1" in
-        --all|-a)
+    case "${1:-}" in
+        --all|-a|"")
             run_all
             ;;
         --collect|-c)
-            check_dependencies
-            step1_collect
+            check_dependencies && step1_collect
+            ;;
+        --ai)
+            step2_ai_analysis
             ;;
         --extract|-e)
             step3_extract
@@ -378,24 +537,24 @@ main() {
             step4_send
             ;;
         --clean)
-            clean
+            cleanup_old_logs
+            ;;
+        --archive)
+            archive_old_json
             ;;
         --status)
-            check_status
-            ;;
-        --menu|-m)
-            interactive_menu
+            show_summary
             ;;
         --help|-h)
-            show_usage
+            show_help
             ;;
         *)
-            print_error "Opção inválida: $1"
-            echo ""
-            show_usage
+            echo "Opção inválida: $1"
+            echo "Use --help para ver as opções disponíveis"
             exit 1
             ;;
     esac
 }
 
+# Executar
 main "$@"

@@ -3,6 +3,7 @@ prompt.txt
 
 # 
 TODO.md
+logs/
 
 # Arquivos de ambiente (contêm credenciais)
 .env
