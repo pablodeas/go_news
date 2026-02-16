@@ -2,10 +2,8 @@
 
 #==============================================================================
 # GoNews - Script de Automação (Otimizado para Cron)
-# Baseado no script funcional do usuário com melhorias
 #==============================================================================
 
-set -e  # Sair em caso de erro
 set -u  # Erro em variáveis não definidas
 
 #==============================================================================
@@ -26,7 +24,7 @@ PROMPT_FILE="${PROJECT_DIR}prompt.txt"
 
 # Configuração
 AI_MODEL="opencode/minimax-m2.5-free"
-KEEP_LOGS_DAYS=3  # Manter logs por X dias
+KEEP_LOGS_DAYS=2  # Manter logs por X dias
 
 #==============================================================================
 # CORES (apenas se terminal interativo)
@@ -81,6 +79,42 @@ log_message() {
 }
 
 #==============================================================================
+# FUNÇÕES AUXILIARES
+#==============================================================================
+
+# Extrai estatísticas de arquivos JSON
+# Uso: extract_json_stat "arquivo.json" "campo" "valor_padrão"
+# Campos suportados: total_items, total_articles, articles_extracted, title_count
+extract_json_stat() {
+    local file="$1"
+    local field="$2"
+    local default="${3:-0}"
+    
+    if [ ! -f "$file" ]; then
+        echo "$default"
+        return 1
+    fi
+    
+    local value
+    case "$field" in
+        total_items|total_articles|articles_extracted)
+            # Extrai valores numéricos de campos JSON
+            value=$(grep -o "\"$field\":[0-9]*" "$file" | grep -o '[0-9]*' || echo "$default")
+            ;;
+        title_count)
+            # Conta ocorrências do campo "title"
+            value=$(grep -o '"title"' "$file" | wc -l || echo "$default")
+            ;;
+        *)
+            echo "$default"
+            return 1
+            ;;
+    esac
+    
+    echo "$value"
+}
+
+#==============================================================================
 # VERIFICAÇÕES INICIAIS
 #==============================================================================
 
@@ -112,7 +146,7 @@ check_dependencies() {
     
     # Criar diretório de logs se não existir
     if [ ! -d "$LOG_DIR" ]; then
-        if mkdir -p "$LOG_DIR" 2>/dev/null; then
+        if mkdir -p "$LOG_DIR"; then
             log_message SUCCESS "Diretório de logs criado: $LOG_DIR"
         else
             log_message ERROR "Não foi possível criar diretório de logs: $LOG_DIR"
@@ -165,8 +199,8 @@ step1_collect() {
         
         # Verificar e mostrar estatísticas
         if [ -f "$METADATA_FILE" ]; then
-            local total=$(grep -o '"total_items":[0-9]*' "$METADATA_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
-            local size=$(du -h "$METADATA_FILE" | cut -f1)
+            local total=$(extract_json_stat "$METADATA_FILE" "total_items" "?")
+            local size=$(du -h "$METADATA_FILE" 2>/dev/null | cut -f1 || echo "?")
             log_message SUCCESS "Arquivo: $METADATA_FILE ($size)"
             log_message INFO "Total de itens coletados: $total"
         else
@@ -208,14 +242,15 @@ step2_ai_analysis() {
     log_message INFO "Prompt: $PROMPT_FILE"
     log_message INFO "Log: $log_file"
     
-    if cd "$PROJECT_DIR" && "$OPENCODE" run --model "$AI_MODEL" "Execute o prompt.txt" > "$log_file" 2>&1; then
+    #if cd "$PROJECT_DIR" && "$OPENCODE" run --model "$AI_MODEL" "Execute o prompt.txt" > "$log_file" 2>&1; then
+    if cd "$PROJECT_DIR" && "$OPENCODE" run "Execute o prompt.txt" > "$log_file" 2>&1; then
         local duration=$(($(date +%s) - start_time))
         log_message SUCCESS "Step2 concluído (${duration}s)"
         
         # Verificar e mostrar estatísticas
         if [ -f "$SELECTED_FILE" ]; then
-            local count=$(grep -o '"title"' "$SELECTED_FILE" 2>/dev/null | wc -l || echo "?")
-            local size=$(du -h "$SELECTED_FILE" | cut -f1)
+            local count=$(extract_json_stat "$SELECTED_FILE" "title_count" "?")
+            local size=$(du -h "$SELECTED_FILE" 2>/dev/null | cut -f1 || echo "?")
             log_message SUCCESS "Arquivo: $SELECTED_FILE ($size)"
             log_message INFO "Notícias selecionadas pela IA: $count"
         else
@@ -257,9 +292,9 @@ step3_extract() {
         
         # Verificar e mostrar estatísticas
         if [ -f "$FULL_FILE" ]; then
-            local total=$(grep -o '"total_articles":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
-            local extracted=$(grep -o '"articles_extracted":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "?")
-            local size=$(du -h "$FULL_FILE" | cut -f1)
+            local total=$(extract_json_stat "$FULL_FILE" "total_articles" "?")
+            local extracted=$(extract_json_stat "$FULL_FILE" "articles_extracted" "?")
+            local size=$(du -h "$FULL_FILE" 2>/dev/null | cut -f1 || echo "?")
             log_message SUCCESS "Arquivo: $FULL_FILE ($size)"
             log_message INFO "Artigos processados: $total"
             log_message INFO "Extrações bem-sucedidas: $extracted"
@@ -316,22 +351,33 @@ step4_send() {
 cleanup_old_logs() {
     log_message INFO "Removendo logs antigos (>${KEEP_LOGS_DAYS} dias)..."
     
-    local deleted=0
-    local old_logs=$(find "$LOG_DIR" -name "*.log" -type f -mtime +$KEEP_LOGS_DAYS 2>/dev/null)
-    
-    if [ -n "$old_logs" ]; then
-        while IFS= read -r file; do
-            if [ -f "$file" ]; then
-                rm -f "$file"
-                ((deleted++))
-            fi
-        done <<< "$old_logs"
+    # Verificar se LOG_DIR existe
+    if [ ! -d "$LOG_DIR" ]; then
+        log_message WARNING "Diretório de logs não encontrado: $LOG_DIR"
+        return 1
     fi
     
-    if [ $deleted -gt 0 ]; then
-        log_message SUCCESS "Removidos $deleted arquivo(s) de log"
-    else
+    # Contar arquivos antes de deletar
+    local count=$(find "$LOG_DIR" -name "*.log" -type f -mtime +$KEEP_LOGS_DAYS 2>/dev/null | wc -l)
+    
+    if [ "$count" -eq 0 ]; then
         log_message INFO "Nenhum log antigo para remover"
+        return 0
+    fi
+    
+    # Listar arquivos que serão removidos (para debug)
+    log_message INFO "Arquivos a serem removidos:"
+    find "$LOG_DIR" -name "*.log" -type f -mtime +$KEEP_LOGS_DAYS -exec basename {} \;
+    
+    # Deletar arquivos
+    find "$LOG_DIR" -name "*.log" -type f -mtime +$KEEP_LOGS_DAYS -exec rm -f {} \;
+    local result=$?
+    
+    if [ $result -eq 0 ]; then
+        log_message SUCCESS "Removidos $count arquivo(s) de log"
+    else
+        log_message ERROR "Erro ao remover logs (código: $result)"
+        return 1
     fi
 }
 
@@ -341,8 +387,8 @@ archive_old_json() {
     local archive_dir="${PROJECT_DIR}archive/$(date +%Y%m)"
     
     if [ ! -d "$archive_dir" ]; then
-        mkdir -p "$archive_dir" 2>/dev/null || {
-            log_message WARNING "Não foi possível criar diretório de arquivo"
+        mkdir -p "$archive_dir" || {
+            log_message WARNING "Não foi possível criar diretório de arquivo: $archive_dir"
             return 1
         }
     fi
@@ -352,8 +398,11 @@ archive_old_json() {
         if [ -f "$file" ]; then
             local basename=$(basename "$file" .json)
             local archive_name="${archive_dir}/${basename}_$(date +%Y%m%d_%H%M%S).json"
-            if mv "$file" "$archive_name" 2>/dev/null; then
+            if mv "$file" "$archive_name"; then
                 ((archived++))
+                log_message INFO "Arquivado: $(basename "$file")"
+            else
+                log_message WARNING "Falha ao arquivar: $(basename "$file")"
             fi
         fi
     done
@@ -399,18 +448,18 @@ show_summary() {
     echo -e "${BOLD}Estatísticas:${NC}"
     
     if [ -f "$METADATA_FILE" ]; then
-        local total=$(grep -o '"total_items":[0-9]*' "$METADATA_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        local total=$(extract_json_stat "$METADATA_FILE" "total_items" "0")
         echo -e "  Itens coletados: ${CYAN}$total${NC}"
     fi
     
     if [ -f "$SELECTED_FILE" ]; then
-        local selected=$(grep -o '"title"' "$SELECTED_FILE" 2>/dev/null | wc -l || echo "0")
+        local selected=$(extract_json_stat "$SELECTED_FILE" "title_count" "0")
         echo -e "  Selecionados pela IA: ${CYAN}$selected${NC}"
     fi
     
     if [ -f "$FULL_FILE" ]; then
-        local total=$(grep -o '"total_articles":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
-        local extracted=$(grep -o '"articles_extracted":[0-9]*' "$FULL_FILE" 2>/dev/null | grep -o '[0-9]*' || echo "0")
+        local total=$(extract_json_stat "$FULL_FILE" "total_articles" "0")
+        local extracted=$(extract_json_stat "$FULL_FILE" "articles_extracted" "0")
         echo -e "  Artigos extraídos: ${CYAN}$extracted/$total${NC}"
     fi
     
