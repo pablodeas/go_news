@@ -7,24 +7,48 @@
 set -u  # Erro em variáveis não definidas
 
 #==============================================================================
-# CONFIGURAÇÃO - CAMINHOS ABSOLUTOS (ESSENCIAL PARA CRON)
+# CONFIGURAÇÃO - CARREGADO DO ARQUIVO .env (ESSENCIAL PARA CRON)
 #==============================================================================
 
-PROJECT_DIR="/home/pablodeas/Projects/go/go_news/"
-GO_NEWS="/usr/bin/gonews"
-GO="/usr/local/go/bin/go"
-OPENCODE="/home/pablodeas/.opencode/bin/opencode"
-LOG_DIR="${PROJECT_DIR}logs"
+# Localiza o .env relativo ao script ou no diretório atual
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    # Exporta apenas variáveis válidas (ignora comentários e linhas vazias)
+    set -o allexport
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +o allexport
+else
+    echo "[ERRO] Arquivo .env não encontrado em: $ENV_FILE"
+    echo "       Crie o arquivo .env com as variáveis necessárias."
+    exit 1
+fi
+
+# Validar variáveis obrigatórias do .env
+_required_vars=(PROJECT_DIR GO_NEWS GO OPENCODE)
+_missing=0
+for _var in "${_required_vars[@]}"; do
+    if [ -z "${!_var:-}" ]; then
+        echo "[ERRO] Variável obrigatória não definida no .env: $_var"
+        ((_missing++))
+    fi
+done
+[ $_missing -gt 0 ] && exit 1
+
+# Derivar caminhos a partir de PROJECT_DIR (podem ser sobrescritos no .env)
+LOG_DIR="${LOG_DIR:-${PROJECT_DIR}logs}"
 
 # Arquivos
-METADATA_FILE="${PROJECT_DIR}rss_feeds_metadata.json"
-SELECTED_FILE="${PROJECT_DIR}news_selected.json"
-FULL_FILE="${PROJECT_DIR}news_today_full.json"
-PROMPT_FILE="${PROJECT_DIR}prompt.txt"
+METADATA_FILE="${METADATA_FILE:-${PROJECT_DIR}rss_feeds_metadata.json}"
+SELECTED_FILE="${SELECTED_FILE:-${PROJECT_DIR}news_selected.json}"
+FULL_FILE="${FULL_FILE:-${PROJECT_DIR}news_today_full.json}"
+PROMPT_FILE="${PROMPT_FILE:-${PROJECT_DIR}prompt.txt}"
 
 # Configuração
-AI_MODEL="opencode/minimax-m2.5-free"
-KEEP_LOGS_DAYS=2  # Manter logs por X dias
+AI_MODEL="${AI_MODEL:-opencode/minimax-m2.5-free}"
+KEEP_LOGS_DAYS="${KEEP_LOGS_DAYS:-2}"  # Manter logs por X dias
 
 #==============================================================================
 # CORES (apenas se terminal interativo)

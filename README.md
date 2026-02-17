@@ -34,6 +34,98 @@ go run gonews.go --extract-full news_selected.json
 go run gonews.go --send-telegram news_today_full.json
 ```
 
+---
+
+## 🤖 Automação com run.sh
+
+O script `run.sh` executa todo o fluxo automaticamente, com suporte a cron, logging estruturado e tratamento de erros.
+
+### Pré-requisitos
+
+Antes de usar o script, certifique-se de que o arquivo `.env` está configurado (veja a seção [Configuração](#️-configuração)):
+
+```bash
+cp .env.example .env
+nano .env
+```
+
+### Execução
+
+```bash
+# Tornar executável (apenas na primeira vez)
+chmod +x run.sh
+
+# Executar o processo completo
+./run.sh
+
+# Ou explicitamente
+./run.sh --all
+```
+
+### Opções disponíveis
+
+| Opção | Descrição |
+|-------|-----------|
+| `--all`, `-a` | Executa as 4 etapas completas (padrão) |
+| `--collect`, `-c` | Apenas Etapa 1: Coletar metadados |
+| `--ai` | Apenas Etapa 2: Análise com IA |
+| `--extract`, `-e` | Apenas Etapa 3: Extrair corpo completo |
+| `--send`, `-s` | Apenas Etapa 4: Enviar para Telegram |
+| `--clean` | Limpar logs antigos |
+| `--archive` | Arquivar JSONs do dia anterior |
+| `--status` | Mostrar status dos arquivos gerados |
+| `--help`, `-h` | Exibir ajuda |
+
+### Agendamento com Cron
+
+Para executar automaticamente todo dia às 8h:
+
+```bash
+crontab -e
+```
+
+Adicione a linha:
+
+```cron
+0 8 * * * /caminho/para/run.sh --all >> /caminho/para/logs/cron.log 2>&1
+```
+
+> **Importante:** Use sempre o caminho absoluto para o script no cron.
+
+### Logs
+
+Os logs são salvos em `logs/` com timestamp por etapa:
+
+```
+logs/
+├── step1_20260211_080001.log   # Coleta de metadados
+├── step2_20260211_080035.log   # Análise com IA
+├── step3_20260211_081102.log   # Extração de corpo
+└── step4_20260211_081305.log   # Envio para Telegram
+```
+
+Logs mais antigos que `KEEP_LOGS_DAYS` (padrão: 2 dias) são removidos automaticamente.
+
+### Variáveis do .env para o run.sh
+
+Além das credenciais do Telegram, o `run.sh` lê as seguintes variáveis do `.env`:
+
+| Variável | Obrigatória | Descrição |
+|----------|-------------|-----------|
+| `PROJECT_DIR` | ✅ Sim | Caminho absoluto do projeto (ex: `/home/user/go_news/`) |
+| `GO_NEWS` | ✅ Sim | Caminho do binário gonews (ex: `/usr/bin/gonews`) |
+| `GO` | ✅ Sim | Caminho do binário go (ex: `/usr/local/go/bin/go`) |
+| `OPENCODE` | ✅ Sim | Caminho do binário opencode (ex: `/home/user/.opencode/bin/opencode`) |
+| `LOG_DIR` | ⬜ Não | Diretório de logs (padrão: `${PROJECT_DIR}logs`) |
+| `METADATA_FILE` | ⬜ Não | Caminho do JSON de metadados (padrão: `${PROJECT_DIR}rss_feeds_metadata.json`) |
+| `SELECTED_FILE` | ⬜ Não | Caminho do JSON selecionado (padrão: `${PROJECT_DIR}news_selected.json`) |
+| `FULL_FILE` | ⬜ Não | Caminho do JSON completo (padrão: `${PROJECT_DIR}news_today_full.json`) |
+| `PROMPT_FILE` | ⬜ Não | Caminho do arquivo de prompt (padrão: `${PROJECT_DIR}prompt.txt`) |
+| `AI_MODEL` | ⬜ Não | Modelo de IA (padrão: `opencode/minimax-m2.5-free`) |
+| `KEEP_LOGS_DAYS` | ⬜ Não | Dias para manter logs (padrão: `2`) |
+
+---
+
 ## 📋 Comandos
 
 | Comando | Descrição |
@@ -236,7 +328,7 @@ Resumo conciso em 2-3 frases no idioma original.
 - Limpeza de tags e elementos não desejados
 - Fallback para summary se extração falhar
 
-## 📝 Dependências
+## 📦 Dependências
 
 Apenas biblioteca padrão do Go:
 - `encoding/json`
@@ -263,6 +355,15 @@ Não requer instalação de pacotes externos.
 - Revogue tokens expostos acidentalmente em [@BotFather](https://t.me/botfather)
 
 ## 🔧 Troubleshooting
+
+**Erro: "Arquivo .env não encontrado"**
+- Crie o arquivo `.env` a partir do `.env.example`
+- O `.env` deve estar na mesma pasta que o `run.sh`
+- Verifique permissões de leitura do arquivo
+
+**Erro: "Variável obrigatória não definida no .env: PROJECT_DIR"**
+- Abra o `.env` e preencha as variáveis obrigatórias: `PROJECT_DIR`, `GO_NEWS`, `GO`, `OPENCODE`
+- Certifique-se de que os caminhos são absolutos e corretos
 
 **Erro: "TELEGRAM_BOT_TOKEN não está definido"**
 - Crie o arquivo `.env` a partir do `.env.example`
@@ -297,6 +398,11 @@ Não requer instalação de pacotes externos.
 - Revise o prompt para ser mais específico
 - Peça explicitamente "JSON válido"
 - Use exemplos no prompt
+
+**run.sh falha em cron mas funciona manualmente**:
+- Verifique se o `.env` contém os caminhos absolutos de `GO_NEWS`, `GO` e `OPENCODE`
+- O cron não herda o `PATH` do usuário — caminhos absolutos são obrigatórios
+- Confirme que o script tem permissão de execução: `chmod +x run.sh`
 
 ## 🎨 Customização
 
@@ -334,6 +440,20 @@ if len(description) > 500 {  // Altere este número
 }
 ```
 
+### Alterar retenção de logs
+
+No `.env`:
+```env
+KEEP_LOGS_DAYS=7   # Manter logs por 7 dias
+```
+
+### Alterar modelo de IA
+
+No `.env`:
+```env
+AI_MODEL=google/gemini-3-pro-preview
+```
+
 ## 🆘 Suporte
 
 **Problemas comuns:**
@@ -342,6 +462,7 @@ if len(description) > 500 {  // Altere este número
 2. **Mensagens não chegam**: Confirme o chat_id
 3. **Compilação falha**: Use Go 1.21 ou superior
 4. **Feed não carrega**: Verifique se a URL está acessível
+5. **run.sh não inicia**: Confirme que o `.env` está preenchido corretamente
 
 ## 📄 Licença
 
